@@ -4,6 +4,8 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
 import { GameRoom } from './gameLogic';
+import { ALL_CARDS, shuffleDeck } from './cards';
+import { CardDef } from './types';
 
 const app = express();
 app.use(cors());
@@ -22,6 +24,22 @@ interface WaitingPlayer {
   socketId: string;
   playerId: string;
   playerName: string;
+  customDeck?: CardDef[];
+}
+
+function buildDeck(customCards?: CardDef[]): CardDef[] {
+  if (!customCards || customCards.length === 0) return shuffleDeck(ALL_CARDS);
+  // Validate and sanitize custom cards
+  const valid = customCards.slice(0, 20).map((c, i) => ({
+    id: `custom-${i}-${Date.now()}`,
+    name: (c.name ?? '').trim().slice(0, 28) || `Custom ${i + 1}`,
+    power: Math.max(1, Math.min(10, c.power ?? 5)),
+    keywords: (c.keywords ?? []).slice(0, 3),
+    ability: c.ability ?? undefined,
+  }));
+  const standard = shuffleDeck(ALL_CARDS);
+  // Replace the first N standard cards with custom cards, then reshuffle
+  return shuffleDeck([...valid, ...standard.slice(valid.length)]);
 }
 
 // roomId → waiting player
@@ -66,18 +84,20 @@ function scheduleCpuAction(room: GameRoom, roomId: string, baseDelay = 900) {
 io.on('connection', (socket) => {
   console.log(`Client connected: ${socket.id}`);
 
-  socket.on('join_vs_cpu', ({ playerName }: { playerName: string }) => {
+  socket.on('join_vs_cpu', ({ playerName, customCards }: { playerName: string; customCards?: CardDef[] }) => {
     if (!playerName) { socket.emit('error', { message: 'Player name required.' }); return; }
 
     const playerId = uuidv4();
     const roomId = uuidv4();
     const gameId = uuidv4();
 
+    const deck = buildDeck(customCards);
     const room = new GameRoom(
       gameId,
       playerId, playerName,
       'cpu', 'CPU',
       socket.id, 'cpu-no-socket',
+      deck,
     );
     room.cpuPlayerIndex = 1;
 
@@ -91,7 +111,7 @@ io.on('connection', (socket) => {
     // Human goes first (player 0), no immediate CPU action needed
   });
 
-  socket.on('join_room', ({ roomId, playerName }: { roomId: string; playerName: string }) => {
+  socket.on('join_room', ({ roomId, playerName, customCards }: { roomId: string; playerName: string; customCards?: CardDef[] }) => {
     if (!roomId || !playerName) {
       socket.emit('error', { message: 'Room ID and player name are required.' });
       return;
@@ -108,11 +128,12 @@ io.on('connection', (socket) => {
     const waiting = waitingRooms.get(roomId);
 
     if (!waiting) {
-      // First player - wait for opponent
+      // First player - wait for opponent (store their custom cards for deck building)
       waitingRooms.set(roomId, {
         socketId: socket.id,
         playerId,
         playerName,
+        customDeck: customCards && customCards.length > 0 ? buildDeck(customCards) : undefined,
       });
       socket.join(roomId);
       socket.emit('room_joined', { roomId, playerIndex: 0, playerId });
@@ -134,14 +155,14 @@ io.on('connection', (socket) => {
       socket.join(roomId);
 
       const gameId = uuidv4();
+      // Use first player's custom deck if they had one, otherwise standard
+      const gameDeck = waiting.customDeck ?? shuffleDeck(ALL_CARDS);
       const room = new GameRoom(
         gameId,
-        waiting.playerId,
-        waiting.playerName,
-        playerId,
-        playerName,
-        waiting.socketId,
-        socket.id
+        waiting.playerId, waiting.playerName,
+        playerId, playerName,
+        waiting.socketId, socket.id,
+        gameDeck,
       );
 
       gameRooms.set(roomId, room);

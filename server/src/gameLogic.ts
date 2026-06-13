@@ -16,11 +16,17 @@ export class GameRoom {
   public cpuPlayerIndex: 0 | 1 | null = null;
   public cpuTimerId: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(gameId: string, player0Id: string, player0Name: string, player1Id: string, player1Name: string, socketId0: string, socketId1: string) {
+  constructor(
+    gameId: string,
+    player0Id: string, player0Name: string,
+    player1Id: string, player1Name: string,
+    socketId0: string, socketId1: string,
+    deckOverride?: CardDef[],
+  ) {
     this.socketIds = [socketId0, socketId1];
 
-    // Shuffle and deal cards
-    const shuffled = shuffleDeck(ALL_CARDS);
+    // Use custom deck if provided, otherwise shuffle standard cards
+    const shuffled = deckOverride ?? shuffleDeck(ALL_CARDS);
     const p0Cards = shuffled.slice(0, 10);
     const p1Cards = shuffled.slice(10, 20);
 
