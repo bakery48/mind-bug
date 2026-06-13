@@ -40,8 +40,8 @@ export function calcCardCost(keywords: Keyword[], ability?: { effect: AbilityEff
 
 const KW_INFO: { value: Keyword; ja: string; en: string; desc: string }[] = [
   { value: 'FRENZY',    ja: '狂乱', en: 'FRENZY',    desc: '攻撃後に生き残ったら再攻撃できる' },
-  { value: 'HUNTER',   ja: '狩人', en: 'HUNTER',   desc: '攻撃時にブロッカーを指定できる' },
-  { value: 'POISONOUS', ja: '毒',   en: 'POISONOUS', desc: '戦闘した相手クリーチャーを倒す' },
+  { value: 'HUNTER',   ja: '狩猟', en: 'HUNTER',   desc: '攻撃時にブロッカーを指定できる' },
+  { value: 'POISONOUS', ja: '猛毒', en: 'POISONOUS', desc: '戦闘した相手クリーチャーを倒す' },
   { value: 'SNEAKY',   ja: '隠密', en: 'SNEAKY',   desc: '隠密クリーチャーにしかブロックされない' },
   { value: 'TOUGH',    ja: '強靭', en: 'TOUGH',    desc: '2回倒されるまで破壊されない' },
 ];

@@ -11,11 +11,19 @@ interface CreatureInPlayProps {
 }
 
 const KEYWORD_COLORS: Record<Keyword, string> = {
-  FRENZY: 'keyword-FRENZY',
-  HUNTER: 'keyword-HUNTER',
+  FRENZY:    'keyword-FRENZY',
+  HUNTER:    'keyword-HUNTER',
   POISONOUS: 'keyword-POISONOUS',
-  SNEAKY: 'keyword-SNEAKY',
-  TOUGH: 'keyword-TOUGH',
+  SNEAKY:    'keyword-SNEAKY',
+  TOUGH:     'keyword-TOUGH',
+};
+
+const KEYWORD_JA: Record<Keyword, string> = {
+  FRENZY:    '狂乱',
+  HUNTER:    '狩猟',
+  POISONOUS: '猛毒',
+  SNEAKY:    '隠密',
+  TOUGH:     '強靭',
 };
 
 export default function CreatureInPlayComponent({
@@ -48,7 +56,7 @@ export default function CreatureInPlayComponent({
       <div className="creature-keywords">
         {creature.keywords.map(kw => (
           <span key={kw} className={`keyword-badge ${KEYWORD_COLORS[kw]}`}>
-            {kw}
+            {KEYWORD_JA[kw]}
           </span>
         ))}
       </div>
