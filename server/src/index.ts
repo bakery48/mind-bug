@@ -27,18 +27,46 @@ interface WaitingPlayer {
   customDeck?: CardDef[];
 }
 
+// ─── Card builder cost rules (must match client) ─────────────────────────────
+const CARD_BUDGET = 6;
+const KW_COSTS: Record<string, number> = {
+  FRENZY: 2, HUNTER: 2, SNEAKY: 2, TOUGH: 2, POISONOUS: 3,
+};
+const ABILITY_COSTS: Record<string, number> = {
+  DRAW_CARD: 1, GAIN_LIFE: 1, RETURN_TO_HAND: 1,
+  DIRECT_DAMAGE: 2, DAMAGE_CREATURE: 2, COPY_CREATURE: 2,
+  WIPE_WEAK: 3,
+};
+
+function calcCardCost(keywords: string[], abilityEffect?: string): number {
+  const kwCost = keywords.reduce((s, k) => s + (KW_COSTS[k] ?? 0), 0);
+  const abCost = abilityEffect ? (ABILITY_COSTS[abilityEffect] ?? 0) : 0;
+  return kwCost + abCost;
+}
+
 function buildDeck(customCards?: CardDef[]): CardDef[] {
   if (!customCards || customCards.length === 0) return shuffleDeck(ALL_CARDS);
-  // Validate and sanitize custom cards
-  const valid = customCards.slice(0, 20).map((c, i) => ({
-    id: `custom-${i}-${Date.now()}`,
-    name: (c.name ?? '').trim().slice(0, 28) || `Custom ${i + 1}`,
-    power: Math.max(1, Math.min(10, c.power ?? 5)),
-    keywords: (c.keywords ?? []).slice(0, 3),
-    ability: c.ability ?? undefined,
-  }));
+  const ts = Date.now();
+  const valid: CardDef[] = [];
+  for (let i = 0; i < Math.min(customCards.length, 20); i++) {
+    const c = customCards[i];
+    const kws = (c.keywords ?? []).filter(k => k in KW_COSTS);
+    const abilityEffect = c.ability?.effect;
+    const cost = calcCardCost(kws, abilityEffect);
+    if (cost > CARD_BUDGET) {
+      console.warn(`Custom card "${c.name}" rejected: cost ${cost} > budget ${CARD_BUDGET}`);
+      continue; // reject over-budget cards
+    }
+    valid.push({
+      id: `custom-${i}-${ts}`,
+      name: (c.name ?? '').trim().slice(0, 28) || `Custom ${i + 1}`,
+      power: Math.max(1, Math.min(10, c.power ?? 5)),
+      keywords: kws as CardDef['keywords'],
+      ability: c.ability,
+    });
+  }
+  if (valid.length === 0) return shuffleDeck(ALL_CARDS);
   const standard = shuffleDeck(ALL_CARDS);
-  // Replace the first N standard cards with custom cards, then reshuffle
   return shuffleDeck([...valid, ...standard.slice(valid.length)]);
 }
 
