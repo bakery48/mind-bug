@@ -32,14 +32,64 @@ const gameRooms = new Map<string, GameRoom>();
 const socketToGame = new Map<string, { roomId: string; playerIndex: 0 | 1 }>();
 
 function broadcastGameState(room: GameRoom, roomId: string) {
-  const state0 = room.getClientState(0);
-  const state1 = room.getClientState(1);
-  io.to(room.getSocketId(0)).emit('game_update', { state: state0 });
-  io.to(room.getSocketId(1)).emit('game_update', { state: state1 });
+  if (room.cpuPlayerIndex !== null) {
+    // CPU game: only send state to the human player
+    const humanIndex = (1 - room.cpuPlayerIndex) as 0 | 1;
+    io.to(room.getSocketId(humanIndex)).emit('game_update', { state: room.getClientState(humanIndex) });
+  } else {
+    io.to(room.getSocketId(0)).emit('game_update', { state: room.getClientState(0) });
+    io.to(room.getSocketId(1)).emit('game_update', { state: room.getClientState(1) });
+  }
+}
+
+function scheduleCpuAction(room: GameRoom, roomId: string, baseDelay = 900) {
+  if (room.cpuPlayerIndex === null) return;
+  if (room.serverState.phase === 'GAME_OVER') return;
+  if (!room.cpuNeedsToAct()) return;
+
+  if (room.cpuTimerId) { clearTimeout(room.cpuTimerId); }
+
+  const jitter = Math.floor(Math.random() * 350);
+  room.cpuTimerId = setTimeout(() => {
+    room.cpuTimerId = undefined;
+    if (!gameRooms.has(roomId)) return;
+    if (!room.cpuNeedsToAct()) return;
+
+    room.performCpuAction();
+    broadcastGameState(room, roomId);
+
+    // Chain: e.g. FRENZY → CPU needs to act again; otherwise no-op
+    scheduleCpuAction(room, roomId, 750);
+  }, baseDelay + jitter);
 }
 
 io.on('connection', (socket) => {
   console.log(`Client connected: ${socket.id}`);
+
+  socket.on('join_vs_cpu', ({ playerName }: { playerName: string }) => {
+    if (!playerName) { socket.emit('error', { message: 'Player name required.' }); return; }
+
+    const playerId = uuidv4();
+    const roomId = uuidv4();
+    const gameId = uuidv4();
+
+    const room = new GameRoom(
+      gameId,
+      playerId, playerName,
+      'cpu', 'CPU',
+      socket.id, 'cpu-no-socket',
+    );
+    room.cpuPlayerIndex = 1;
+
+    gameRooms.set(roomId, room);
+    socketToGame.set(socket.id, { roomId, playerIndex: 0 });
+
+    socket.emit('room_joined', { roomId, playerIndex: 0, playerId });
+    socket.emit('game_started', { state: room.getClientState(0) });
+
+    console.log(`CPU game started in room ${roomId}: ${playerName} vs CPU`);
+    // Human goes first (player 0), no immediate CPU action needed
+  });
 
   socket.on('join_room', ({ roomId, playerName }: { roomId: string; playerName: string }) => {
     if (!roomId || !playerName) {
@@ -130,15 +180,20 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // If we're now in MINDBUG_WINDOW, start the timer
+    // Mindbug window: CPU responds automatically; human games use 15s timer
     if (room.serverState.phase === 'MINDBUG_WINDOW') {
-      room.setMindbugTimer(() => {
-        room.autoPassMindbug();
-        broadcastGameState(room, roomId);
-      });
+      if (room.cpuPlayerIndex !== null) {
+        scheduleCpuAction(room, roomId, 1200);
+      } else {
+        room.setMindbugTimer(() => {
+          room.autoPassMindbug();
+          broadcastGameState(room, roomId);
+        });
+      }
     }
 
     broadcastGameState(room, roomId);
+    scheduleCpuAction(room, roomId);
   });
 
   socket.on('mindbug_response', ({ use }: { use: boolean }) => {
@@ -163,6 +218,7 @@ io.on('connection', (socket) => {
     }
 
     broadcastGameState(room, roomId);
+    scheduleCpuAction(room, roomId);
   });
 
   socket.on('declare_attack', ({ instanceId }: { instanceId: string }) => {
@@ -186,6 +242,7 @@ io.on('connection', (socket) => {
     }
 
     broadcastGameState(room, roomId);
+    scheduleCpuAction(room, roomId);
   });
 
   socket.on('declare_block', ({ instanceId }: { instanceId: string | null }) => {
@@ -209,6 +266,7 @@ io.on('connection', (socket) => {
     }
 
     broadcastGameState(room, roomId);
+    scheduleCpuAction(room, roomId);
   });
 
   socket.on('select_ability_target', ({ instanceId }: { instanceId: string }) => {
@@ -233,6 +291,7 @@ io.on('connection', (socket) => {
     }
 
     broadcastGameState(room, roomId);
+    scheduleCpuAction(room, roomId);
   });
 
   socket.on('end_turn', () => {
@@ -256,6 +315,7 @@ io.on('connection', (socket) => {
     }
 
     broadcastGameState(room, roomId);
+    scheduleCpuAction(room, roomId);
   });
 
   socket.on('disconnect', () => {
@@ -275,14 +335,19 @@ io.on('connection', (socket) => {
       const { roomId, playerIndex } = gameInfo;
       const room = gameRooms.get(roomId);
       if (room) {
-        const opponentIndex = (1 - playerIndex) as 0 | 1;
-        const opponentSocketId = room.getSocketId(opponentIndex);
-        const opponentState = room.getClientState(opponentIndex);
-        opponentState.phase = 'GAME_OVER';
-        opponentState.lastEvent = `${room.serverState.players[playerIndex].name} disconnected. You win!`;
-        opponentState.winner = room.serverState.players[opponentIndex].id;
-        opponentState.winnerName = room.serverState.players[opponentIndex].name;
-        io.to(opponentSocketId).emit('game_update', { state: opponentState });
+        if (room.cpuPlayerIndex !== null) {
+          // CPU game - just clean up
+          if (room.cpuTimerId) clearTimeout(room.cpuTimerId);
+        } else {
+          // Notify human opponent
+          const opponentIndex = (1 - playerIndex) as 0 | 1;
+          const opponentState = room.getClientState(opponentIndex);
+          opponentState.phase = 'GAME_OVER';
+          opponentState.lastEvent = `${room.serverState.players[playerIndex].name} disconnected. You win!`;
+          opponentState.winner = room.serverState.players[opponentIndex].id;
+          opponentState.winnerName = room.serverState.players[opponentIndex].name;
+          io.to(room.getSocketId(opponentIndex)).emit('game_update', { state: opponentState });
+        }
         gameRooms.delete(roomId);
       }
       socketToGame.delete(socket.id);

@@ -56,6 +56,11 @@ function App() {
     socket.emit('join_room', { roomId, playerName });
   };
 
+  const handleVsCpu = (playerName: string) => {
+    setError(null);
+    socket.emit('join_vs_cpu', { playerName });
+  };
+
   const handlePlayAgain = () => {
     setAppPhase('lobby');
     setRoomInfo(null);
@@ -63,7 +68,7 @@ function App() {
   };
 
   if (appPhase === 'lobby') {
-    return <Lobby onJoinRoom={handleJoinRoom} error={error} />;
+    return <Lobby onJoinRoom={handleJoinRoom} onVsCpu={handleVsCpu} error={error} />;
   }
 
   if (appPhase === 'game' && gameState && roomInfo) {

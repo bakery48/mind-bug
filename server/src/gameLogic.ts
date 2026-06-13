@@ -13,6 +13,8 @@ import {
 export class GameRoom {
   public serverState: ServerGameState;
   private socketIds: [string, string];
+  public cpuPlayerIndex: 0 | 1 | null = null;
+  public cpuTimerId: ReturnType<typeof setTimeout> | undefined;
 
   constructor(gameId: string, player0Id: string, player0Name: string, player1Id: string, player1Name: string, socketId0: string, socketId1: string) {
     this.socketIds = [socketId0, socketId1];
@@ -402,12 +404,11 @@ export class GameRoom {
       };
       s.lastEvent += ` Waiting for ${opponent.name} to decide on Mindbug...`;
     } else {
-      // No mindbug available, put card into play
+      // No mindbug available, put card into play immediately
       player.inPlay.push(creature);
       const needsTarget = this.triggerPlayAbility(creature, playerIndex);
       if (!needsTarget) {
-        s.phase = 'PLAYER_TURN';
-        // Don't end turn - player can still act
+        if (!this.checkWinCondition()) this.endTurnAfterAction();
       }
     }
 
@@ -440,6 +441,8 @@ export class GameRoom {
     const pendingCard = s.pendingCard;
     s.pendingCard = undefined;
 
+    if (s.mindbugTimer) { clearTimeout(s.mindbugTimer); s.mindbugTimer = undefined; }
+
     if (use) {
       // Steal the card
       s.players[playerIndex].mindbugsRemaining -= 1;
@@ -447,16 +450,10 @@ export class GameRoom {
       s.players[playerIndex].inPlay.push(creature);
       s.lastEvent = `${s.players[playerIndex].name} used a Mindbug! ${creature.name} now belongs to ${s.players[playerIndex].name}!`;
 
-      // Clear mindbug timer
-      if (s.mindbugTimer) {
-        clearTimeout(s.mindbugTimer);
-        s.mindbugTimer = undefined;
-      }
-
       // Trigger PLAY ability for the new controller
       const needsTarget = this.triggerPlayAbility(creature, playerIndex);
       if (!needsTarget) {
-        s.phase = 'PLAYER_TURN';
+        if (!this.checkWinCondition()) this.endTurnAfterAction();
       }
     } else {
       // Pass on mindbug - card goes to original player
@@ -464,15 +461,9 @@ export class GameRoom {
       s.players[playedByIndex].inPlay.push(creature);
       s.lastEvent = `${s.players[opponentIndex].name} passed on Mindbug. ${creature.name} enters play for ${s.players[playedByIndex].name}.`;
 
-      // Clear mindbug timer
-      if (s.mindbugTimer) {
-        clearTimeout(s.mindbugTimer);
-        s.mindbugTimer = undefined;
-      }
-
       const needsTarget = this.triggerPlayAbility(creature, playedByIndex);
       if (!needsTarget) {
-        s.phase = 'PLAYER_TURN';
+        if (!this.checkWinCondition()) this.endTurnAfterAction();
       }
     }
 
@@ -511,7 +502,7 @@ export class GameRoom {
 
     const needsTarget = this.triggerPlayAbility(creature, playedByIndex);
     if (!needsTarget) {
-      s.phase = 'PLAYER_TURN';
+      if (!this.checkWinCondition()) this.endTurnAfterAction();
     }
   }
 
@@ -753,8 +744,7 @@ export class GameRoom {
     }
 
     if (this.checkWinCondition()) return null;
-
-    s.phase = 'PLAYER_TURN';
+    this.endTurnAfterAction();
     return null;
   }
 
@@ -771,5 +761,208 @@ export class GameRoom {
     s.lastEvent = `${s.players[playerIndex].name} ends their turn.`;
     this.endTurnAfterAction();
     return null;
+  }
+
+  // ─── CPU AI ───────────────────────────────────────────────────────────────
+
+  cpuNeedsToAct(): boolean {
+    const s = this.serverState;
+    const cpu = this.cpuPlayerIndex;
+    if (cpu === null) return false;
+    if (s.phase === 'GAME_OVER' || s.phase === 'WAITING') return false;
+    const human = (1 - cpu) as 0 | 1;
+    switch (s.phase) {
+      case 'PLAYER_TURN':    return s.activePlayerIndex === cpu;
+      case 'FRENZY_ATTACK':  return s.activePlayerIndex === cpu;
+      case 'MINDBUG_WINDOW': return s.pendingCard?.playedByIndex === human;
+      case 'CHOOSE_BLOCKER': return s.pendingAttack?.attackerIndex === human;
+      case 'ABILITY_TARGET': return s.abilityTargetPrompt?.forPlayerIndex === cpu;
+      default: return false;
+    }
+  }
+
+  performCpuAction(): void {
+    const s = this.serverState;
+    const cpu = this.cpuPlayerIndex!;
+    const human = (1 - cpu) as 0 | 1;
+
+    switch (s.phase) {
+      case 'PLAYER_TURN':
+        if (s.activePlayerIndex === cpu) this.cpuTakeTurn();
+        break;
+      case 'FRENZY_ATTACK':
+        if (s.activePlayerIndex === cpu) {
+          if (s.frenzyCreatureInstanceId) this.declareAttack(cpu, s.frenzyCreatureInstanceId);
+          else this.endTurnAfterAction();
+        }
+        break;
+      case 'MINDBUG_WINDOW':
+        if (s.pendingCard?.playedByIndex === human) {
+          const steal = this.cpuShouldUseMindBug(s.pendingCard.card);
+          this.respondToMindbug(cpu, steal);
+        }
+        break;
+      case 'CHOOSE_BLOCKER':
+        if (s.pendingAttack?.attackerIndex === human) this.cpuChooseBlock();
+        break;
+      case 'ABILITY_TARGET':
+        if (s.abilityTargetPrompt?.forPlayerIndex === cpu) this.cpuSelectAbilityTarget();
+        break;
+    }
+  }
+
+  private cpuTakeTurn(): void {
+    const cpu = this.cpuPlayerIndex!;
+    const human = (1 - cpu) as 0 | 1;
+    const s = this.serverState;
+
+    const attacker = this.cpuFindBestAttacker(s.players[cpu].inPlay, s.players[human].inPlay);
+    if (attacker) {
+      this.declareAttack(cpu, attacker.instanceId);
+      return;
+    }
+    if (s.players[cpu].hand.length > 0) {
+      this.playCard(cpu, this.cpuBestCardToPlay(s.players[cpu].hand));
+      return;
+    }
+    this.endTurn(cpu);
+  }
+
+  private cpuFindBestAttacker(mine: CreatureInPlay[], theirs: CreatureInPlay[]): CreatureInPlay | null {
+    if (mine.length === 0) return null;
+    if (theirs.length === 0) return [...mine].sort((a, b) => b.power - a.power)[0];
+
+    // SNEAKY unblocked attack
+    const theirSneaky = theirs.filter(c => c.keywords.includes('SNEAKY'));
+    const mySneaky = mine.filter(c => c.keywords.includes('SNEAKY'));
+    if (mySneaky.length > 0 && theirSneaky.length === 0) {
+      return [...mySneaky].sort((a, b) => b.power - a.power)[0];
+    }
+
+    let best: CreatureInPlay | null = null;
+    let bestScore = 0;
+    for (const att of mine) {
+      const dominated = theirs.some(b => this.cpuBeats(b, att));
+      let score = dominated ? -1 : (theirs.some(b => this.cpuBeats(att, b)) ? 3 : 1);
+      if (att.keywords.includes('FRENZY')) score += 1;
+      if (att.keywords.includes('HUNTER') && theirs.length > 0) score += 1;
+      if (score > bestScore) { bestScore = score; best = att; }
+    }
+    return best;
+  }
+
+  // Returns true if `att` defeats `def` without being defeated
+  private cpuBeats(att: CreatureInPlay, def: CreatureInPlay): boolean {
+    if (def.keywords.includes('POISONOUS')) return false; // attacker gets poisoned if it survives
+    if (att.keywords.includes('POISONOUS') && !def.keywords.includes('POISONOUS')) return true;
+    const defPow = def.keywords.includes('TOUGH') && !def.isDamaged ? def.power + 0.5 : def.power;
+    return att.power > defPow;
+  }
+
+  private cpuBestCardToPlay(hand: CardDef[]): number {
+    let best = 0, bestScore = -Infinity;
+    for (let i = 0; i < hand.length; i++) {
+      const c = hand[i];
+      let score = c.power;
+      if (c.ability?.effect === 'WIPE_WEAK') score += 4;
+      if (c.ability?.effect === 'DAMAGE_CREATURE') score += 2;
+      if (c.ability?.effect === 'DRAW_CARD') score += 1;
+      if (c.keywords.includes('POISONOUS')) score += 2;
+      if (c.keywords.includes('FRENZY')) score += 1;
+      if (c.keywords.includes('HUNTER')) score += 1;
+      if (c.keywords.includes('TOUGH')) score += 1.5;
+      if (score > bestScore) { bestScore = score; best = i; }
+    }
+    return best;
+  }
+
+  private cpuShouldUseMindBug(card: CreatureInPlay): boolean {
+    const cpu = this.cpuPlayerIndex!;
+    if (this.serverState.players[cpu].mindbugsRemaining <= 0) return false;
+    if (card.power >= 8) return true;
+    if (card.power >= 7 && (card.keywords.length > 0 || card.ability)) return true;
+    if (card.ability?.effect === 'WIPE_WEAK') return true;
+    if (card.ability?.effect === 'DAMAGE_CREATURE' && card.power >= 6) return true;
+    const strong = card.keywords.filter(k => ['POISONOUS', 'FRENZY', 'HUNTER'].includes(k));
+    return strong.length >= 2 && card.power >= 5;
+  }
+
+  private cpuChooseBlock(): void {
+    const cpu = this.cpuPlayerIndex!;
+    const human = (1 - cpu) as 0 | 1;
+    const s = this.serverState;
+    if (!s.pendingAttack) return;
+
+    const forcedId = s.pendingAttack.forcedBlockerInstanceId;
+    if (forcedId) { this.declareBlock(cpu, forcedId); return; }
+
+    const atkData = this.findCreatureByInstanceId(s.pendingAttack.attackerInstanceId);
+    if (!atkData) { this.declareBlock(cpu, null); return; }
+    const atk = atkData.creature;
+    const valid = atk.keywords.includes('SNEAKY')
+      ? s.players[cpu].inPlay.filter(c => c.keywords.includes('SNEAKY'))
+      : s.players[cpu].inPlay;
+
+    if (valid.length === 0) { this.declareBlock(cpu, null); return; }
+
+    // Must block to survive
+    if (s.players[cpu].life <= 1) {
+      const weakest = [...valid].sort((a, b) => a.power - b.power)[0];
+      this.declareBlock(cpu, weakest.instanceId);
+      return;
+    }
+    // Block with weakest winning blocker
+    const winning = valid.filter(b => this.cpuBeats(b, atk));
+    if (winning.length > 0) {
+      const weakest = [...winning].sort((a, b) => a.power - b.power)[0];
+      this.declareBlock(cpu, weakest.instanceId);
+      return;
+    }
+    this.declareBlock(cpu, null);
+  }
+
+  private cpuSelectAbilityTarget(): void {
+    const cpu = this.cpuPlayerIndex!;
+    const human = (1 - cpu) as 0 | 1;
+    const s = this.serverState;
+    const prompt = s.abilityTargetPrompt;
+    if (!prompt || prompt.eligibleTargets.length === 0) return;
+
+    const resolve = (id: string) => this.selectAbilityTarget(cpu, id);
+    const creatures = (ids: string[]) =>
+      ids.map(id => ({ id, d: this.findCreatureByInstanceId(id) })).filter(x => !!x.d) as
+        { id: string; d: { creature: CreatureInPlay; ownerIndex: 0 | 1 } }[];
+
+    // HUNTER: choose which enemy creature must block
+    if (s.pendingAttack?.attackerIndex === cpu) {
+      const atkData = this.findCreatureByInstanceId(s.pendingAttack.attackerInstanceId);
+      const all = creatures(prompt.eligibleTargets);
+      const beatable = atkData ? all.filter(x => this.cpuBeats(atkData.creature, x.d.creature)) : [];
+      const pick = beatable.length > 0
+        ? beatable.sort((a, b) => b.d.creature.power - a.d.creature.power)[0]
+        : all.sort((a, b) => a.d.creature.power - b.d.creature.power)[0];
+      resolve(pick.id);
+      return;
+    }
+
+    if (prompt.effect === 'DAMAGE_CREATURE') {
+      const enemies = creatures(prompt.eligibleTargets).filter(x => x.d.ownerIndex === human);
+      const pick = enemies.length > 0
+        ? enemies.sort((a, b) => b.d.creature.power - a.d.creature.power)[0].id
+        : prompt.eligibleTargets[0];
+      resolve(pick);
+      return;
+    }
+
+    if (prompt.effect === 'COPY_CREATURE') {
+      const all = creatures(prompt.eligibleTargets);
+      const pick = all.length > 0
+        ? all.sort((a, b) => b.d.creature.power - a.d.creature.power)[0].id
+        : prompt.eligibleTargets[0];
+      resolve(pick);
+      return;
+    }
+
+    resolve(prompt.eligibleTargets[0]);
   }
 }
