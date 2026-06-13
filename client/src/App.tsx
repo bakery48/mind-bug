@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import socket from './socket';
-import { CardDef, ClientGameState } from './types';
+import { CardDef, ClientGameState, Expansions } from './types';
 import Lobby from './components/Lobby';
 import GameBoard from './components/GameBoard';
 
@@ -51,14 +51,14 @@ function App() {
     };
   }, []);
 
-  const handleJoinRoom = (playerName: string, roomId: string, customCards: CardDef[]) => {
+  const handleJoinRoom = (playerName: string, roomId: string, customCards: CardDef[], expansions: Expansions) => {
     setError(null);
-    socket.emit('join_room', { roomId, playerName, customCards });
+    socket.emit('join_room', { roomId, playerName, customCards, expansions });
   };
 
-  const handleVsCpu = (playerName: string, customCards: CardDef[]) => {
+  const handleVsCpu = (playerName: string, customCards: CardDef[], expansions: Expansions) => {
     setError(null);
-    socket.emit('join_vs_cpu', { playerName, customCards });
+    socket.emit('join_vs_cpu', { playerName, customCards, expansions });
   };
 
   const handlePlayAgain = () => {

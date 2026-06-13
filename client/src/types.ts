@@ -1,4 +1,8 @@
 export type Keyword = 'FRENZY' | 'HUNTER' | 'POISONOUS' | 'SNEAKY' | 'TOUGH';
+
+export interface Expansions {
+  kotEnabled: boolean;
+}
 export type AbilityTrigger = 'PLAY' | 'ATTACK' | 'DEFEATED';
 export type AbilityEffect =
   | 'DRAW_CARD'

@@ -5,7 +5,8 @@ import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
 import { GameRoom } from './gameLogic';
 import { ALL_CARDS, shuffleDeck } from './cards';
-import { CardDef } from './types';
+import { KOT_CARDS } from './cards-kot';
+import { CardDef, Expansions } from './types';
 
 const app = express();
 app.use(cors());
@@ -25,6 +26,7 @@ interface WaitingPlayer {
   playerId: string;
   playerName: string;
   customDeck?: CardDef[];
+  expansions: Expansions;
 }
 
 // ─── Card builder cost rules (must match client) ─────────────────────────────
@@ -44,8 +46,15 @@ function calcCardCost(keywords: string[], abilityEffect?: string): number {
   return kwCost + abCost;
 }
 
-function buildDeck(customCards?: CardDef[]): CardDef[] {
-  if (!customCards || customCards.length === 0) return shuffleDeck(ALL_CARDS);
+function buildBasePool(expansions: Expansions): CardDef[] {
+  const pool = [...ALL_CARDS];
+  if (expansions.kotEnabled) pool.push(...KOT_CARDS);
+  return pool;
+}
+
+function buildDeck(customCards?: CardDef[], expansions: Expansions = { kotEnabled: false }): CardDef[] {
+  const basePool = buildBasePool(expansions);
+  if (!customCards || customCards.length === 0) return shuffleDeck(basePool);
   const ts = Date.now();
   const valid: CardDef[] = [];
   for (let i = 0; i < Math.min(customCards.length, 20); i++) {
@@ -55,7 +64,7 @@ function buildDeck(customCards?: CardDef[]): CardDef[] {
     const cost = calcCardCost(kws, abilityEffect);
     if (cost > CARD_BUDGET) {
       console.warn(`Custom card "${c.name}" rejected: cost ${cost} > budget ${CARD_BUDGET}`);
-      continue; // reject over-budget cards
+      continue;
     }
     valid.push({
       id: `custom-${i}-${ts}`,
@@ -65,8 +74,8 @@ function buildDeck(customCards?: CardDef[]): CardDef[] {
       ability: c.ability,
     });
   }
-  if (valid.length === 0) return shuffleDeck(ALL_CARDS);
-  const standard = shuffleDeck(ALL_CARDS);
+  if (valid.length === 0) return shuffleDeck(basePool);
+  const standard = shuffleDeck(basePool);
   return shuffleDeck([...valid, ...standard.slice(valid.length)]);
 }
 
@@ -112,14 +121,14 @@ function scheduleCpuAction(room: GameRoom, roomId: string, baseDelay = 900) {
 io.on('connection', (socket) => {
   console.log(`Client connected: ${socket.id}`);
 
-  socket.on('join_vs_cpu', ({ playerName, customCards }: { playerName: string; customCards?: CardDef[] }) => {
+  socket.on('join_vs_cpu', ({ playerName, customCards, expansions }: { playerName: string; customCards?: CardDef[]; expansions?: Expansions }) => {
     if (!playerName) { socket.emit('error', { message: 'Player name required.' }); return; }
 
     const playerId = uuidv4();
     const roomId = uuidv4();
     const gameId = uuidv4();
 
-    const deck = buildDeck(customCards);
+    const deck = buildDeck(customCards, expansions ?? { kotEnabled: false });
     const room = new GameRoom(
       gameId,
       playerId, playerName,
@@ -139,13 +148,14 @@ io.on('connection', (socket) => {
     // Human goes first (player 0), no immediate CPU action needed
   });
 
-  socket.on('join_room', ({ roomId, playerName, customCards }: { roomId: string; playerName: string; customCards?: CardDef[] }) => {
+  socket.on('join_room', ({ roomId, playerName, customCards, expansions }: { roomId: string; playerName: string; customCards?: CardDef[]; expansions?: Expansions }) => {
     if (!roomId || !playerName) {
       socket.emit('error', { message: 'Room ID and player name are required.' });
       return;
     }
 
     const playerId = uuidv4();
+    const resolvedExpansions: Expansions = expansions ?? { kotEnabled: false };
 
     // Check if a game is already running in this room
     if (gameRooms.has(roomId)) {
@@ -161,7 +171,8 @@ io.on('connection', (socket) => {
         socketId: socket.id,
         playerId,
         playerName,
-        customDeck: customCards && customCards.length > 0 ? buildDeck(customCards) : undefined,
+        customDeck: customCards && customCards.length > 0 ? buildDeck(customCards, resolvedExpansions) : undefined,
+        expansions: resolvedExpansions,
       });
       socket.join(roomId);
       socket.emit('room_joined', { roomId, playerIndex: 0, playerId });
@@ -183,8 +194,8 @@ io.on('connection', (socket) => {
       socket.join(roomId);
 
       const gameId = uuidv4();
-      // Use first player's custom deck if they had one, otherwise standard
-      const gameDeck = waiting.customDeck ?? shuffleDeck(ALL_CARDS);
+      // Use first player's custom deck if they had one, otherwise base pool
+      const gameDeck = waiting.customDeck ?? shuffleDeck(buildBasePool(waiting.expansions));
       const room = new GameRoom(
         gameId,
         waiting.playerId, waiting.playerName,

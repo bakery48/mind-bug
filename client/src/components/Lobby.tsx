@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { CardDef } from '../types';
+import { CardDef, Expansions } from '../types';
 import CardBuilder from './CardBuilder';
 
 interface LobbyProps {
-  onJoinRoom: (playerName: string, roomId: string, customCards: CardDef[]) => void;
-  onVsCpu: (playerName: string, customCards: CardDef[]) => void;
+  onJoinRoom: (playerName: string, roomId: string, customCards: CardDef[], expansions: Expansions) => void;
+  onVsCpu: (playerName: string, customCards: CardDef[], expansions: Expansions) => void;
   error: string | null;
 }
 
@@ -21,6 +21,9 @@ export default function Lobby({ onJoinRoom, onVsCpu, error }: LobbyProps) {
   const [mode, setMode] = useState<'select' | 'online'>('select');
   const [showBuilder, setShowBuilder] = useState(false);
   const [customCards, setCustomCards] = useState<CardDef[]>([]);
+  const [expansions, setExpansions] = useState<Expansions>({ kotEnabled: false });
+
+  const toggleKot = () => setExpansions(prev => ({ ...prev, kotEnabled: !prev.kotEnabled }));
 
   const nameOk = playerName.trim().length > 0;
 
@@ -36,7 +39,7 @@ export default function Lobby({ onJoinRoom, onVsCpu, error }: LobbyProps) {
       e.preventDefault();
       if (!nameOk) return;
       const finalRoomId = roomId.trim() || generateRoomId();
-      onJoinRoom(playerName.trim(), finalRoomId.toUpperCase(), customCards);
+      onJoinRoom(playerName.trim(), finalRoomId.toUpperCase(), customCards, expansions);
     };
     return (
       <div className="lobby">
@@ -88,6 +91,28 @@ export default function Lobby({ onJoinRoom, onVsCpu, error }: LobbyProps) {
           />
         </div>
 
+        {/* Expansion packs */}
+        <div className="expansion-section">
+          <div className="expansion-label">拡張パック</div>
+          <div className="expansion-list">
+            <div className={`expansion-pack ${expansions.kotEnabled ? 'enabled' : ''}`} onClick={toggleKot}>
+              <div className="expansion-pack-header">
+                <span className="expansion-icon">🦖</span>
+                <div className="expansion-info">
+                  <span className="expansion-name">キング・オブ・トーキョー</span>
+                  <span className="expansion-count">24枚</span>
+                </div>
+                <span className={`expansion-toggle ${expansions.kotEnabled ? 'on' : 'off'}`}>
+                  {expansions.kotEnabled ? 'ON' : 'OFF'}
+                </span>
+              </div>
+              {expansions.kotEnabled && (
+                <div className="expansion-desc">怪獣カード24枚をデッキに追加（合計72枚）</div>
+              )}
+            </div>
+          </div>
+        </div>
+
         {/* Card builder toggle */}
         <button
           type="button"
@@ -117,7 +142,7 @@ export default function Lobby({ onJoinRoom, onVsCpu, error }: LobbyProps) {
           <button
             className="btn btn-primary"
             disabled={!nameOk}
-            onClick={() => nameOk && onVsCpu(playerName.trim(), customCards)}
+            onClick={() => nameOk && onVsCpu(playerName.trim(), customCards, expansions)}
           >
             🤖 vs CPU（練習）
           </button>
