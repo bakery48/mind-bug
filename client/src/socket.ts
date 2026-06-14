@@ -1,11 +1,10 @@
 import { io, Socket } from 'socket.io-client';
 
-const SOCKET_URL = import.meta.env.PROD
-  ? window.location.origin
-  : 'http://localhost:3001';
-
-export const socket: Socket = io(SOCKET_URL, {
+// Always use current origin so the Vite proxy (dev) or same-host server (prod)
+// handles the /socket.io path — avoids direct localhost:3001 in cloud environments.
+export const socket: Socket = io(window.location.origin, {
   autoConnect: false,
+  path: '/socket.io',
 });
 
 export default socket;
